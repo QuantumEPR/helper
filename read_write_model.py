@@ -34,15 +34,16 @@ import os
 import struct
 
 import numpy as np
+from .utility import parse_camera_model
 
 CameraModel = collections.namedtuple(
     "CameraModel", ["model_id", "model_name", "num_params"]
 )
 Camera = collections.namedtuple(
-    "Camera", ["id", "model", "width", "height", "params"]
+    "Camera", ["id", "model", "width", "height", "params", "fx", "fy", "cx", "cy"]
 )
 BaseImage = collections.namedtuple(
-    "Image", ["id", "qvec", "tvec", "camera_id", "name", "xys", "point3D_ids"]
+    "Image", ["id", "qvec", "tvec", "matrix", "camera_id", "name", "xys", "point3D_ids"]
 )
 Point3D = collections.namedtuple(
     "Point3D", ["id", "xyz", "rgb", "error", "image_ids", "point2D_idxs"]
@@ -103,12 +104,7 @@ def write_next_bytes(fid, data, format_char_sequence, endian_character="<"):
     fid.write(bytes)
 
 
-def read_cameras_text(path):
-    """
-    see: src/colmap/scene/reconstruction.cc
-        void Reconstruction::WriteCamerasText(const std::string& path)
-        void Reconstruction::ReadCamerasText(const std::string& path)
-    """
+def read_intrinsics_text(path):
     cameras = {}
     with open(path, "r") as fid:
         while True:
@@ -123,22 +119,19 @@ def read_cameras_text(path):
                 width = int(elems[2])
                 height = int(elems[3])
                 params = np.array(tuple(map(float, elems[4:])))
+                fx, fy, cx, cy, *_ = parse_camera_model(model, params)
                 cameras[camera_id] = Camera(
                     id=camera_id,
                     model=model,
                     width=width,
                     height=height,
                     params=params,
+                    fx=fx, fy=fy, cx=cx, cy=cy
                 )
     return cameras
 
 
-def read_cameras_binary(path_to_model_file):
-    """
-    see: src/colmap/scene/reconstruction.cc
-        void Reconstruction::WriteCamerasBinary(const std::string& path)
-        void Reconstruction::ReadCamerasBinary(const std::string& path)
-    """
+def read_intrinsics_binary(path_to_model_file):
     cameras = {}
     with open(path_to_model_file, "rb") as fid:
         num_cameras = read_next_bytes(fid, 8, "Q")[0]
@@ -157,18 +150,20 @@ def read_cameras_binary(path_to_model_file):
                 num_bytes=8 * num_params,
                 format_char_sequence="d" * num_params,
             )
+            fx, fy, cx, cy, *_ = parse_camera_model(model_name, params)
             cameras[camera_id] = Camera(
                 id=camera_id,
                 model=model_name,
                 width=width,
                 height=height,
-                params=np.array(params),
+                params=params,
+                fx=fx, fy=fy, cx=cx, cy=cy
             )
         assert len(cameras) == num_cameras
     return cameras
 
 
-def write_cameras_text(cameras, path):
+def write_intrinsics_text(cameras, path):
     """
     see: src/colmap/scene/reconstruction.cc
         void Reconstruction::WriteCamerasText(const std::string& path)
@@ -187,7 +182,7 @@ def write_cameras_text(cameras, path):
             fid.write(line + "\n")
 
 
-def write_cameras_binary(cameras, path_to_model_file):
+def write_intrinsics_binary(cameras, path_to_model_file):
     """
     see: src/colmap/scene/reconstruction.cc
         void Reconstruction::WriteCamerasBinary(const std::string& path)
@@ -204,12 +199,7 @@ def write_cameras_binary(cameras, path_to_model_file):
     return cameras
 
 
-def read_images_text(path):
-    """
-    see: src/colmap/scene/reconstruction.cc
-        void Reconstruction::ReadImagesText(const std::string& path)
-        void Reconstruction::WriteImagesText(const std::string& path)
-    """
+def read_extrinsics_text(path):
     images = {}
     with open(path, "r") as fid:
         while True:
@@ -222,6 +212,12 @@ def read_images_text(path):
                 image_id = int(elems[0])
                 qvec = np.array(tuple(map(float, elems[1:5])))
                 tvec = np.array(tuple(map(float, elems[5:8])))
+                # additional matrix
+                matrix = np.zeros((4,4))
+                matrix[:3, :3] = qvec2rotmat(qvec)
+                matrix[:3, 3] = tvec
+                matrix[3, 3] = 1
+
                 camera_id = int(elems[8])
                 image_name = elems[9]
                 elems = fid.readline().split()
@@ -234,22 +230,18 @@ def read_images_text(path):
                 point3D_ids = np.array(tuple(map(int, elems[2::3])))
                 images[image_id] = Image(
                     id=image_id,
-                    qvec=qvec,
-                    tvec=tvec,
+                    qvec=qvec.tolist(),
+                    tvec=tvec.tolist(),
+                    matrix=matrix.tolist(),
                     camera_id=camera_id,
                     name=image_name,
-                    xys=xys,
-                    point3D_ids=point3D_ids,
+                    xys=xys.tolist(),
+                    point3D_ids=point3D_ids.tolist(),
                 )
     return images
 
 
-def read_images_binary(path_to_model_file):
-    """
-    see: src/colmap/scene/reconstruction.cc
-        void Reconstruction::ReadImagesBinary(const std::string& path)
-        void Reconstruction::WriteImagesBinary(const std::string& path)
-    """
+def read_extrinsics_binary(path_to_model_file):
     images = {}
     with open(path_to_model_file, "rb") as fid:
         num_reg_images = read_next_bytes(fid, 8, "Q")[0]
@@ -260,6 +252,12 @@ def read_images_binary(path_to_model_file):
             image_id = binary_image_properties[0]
             qvec = np.array(binary_image_properties[1:5])
             tvec = np.array(binary_image_properties[5:8])
+            # additional matrix
+            matrix = np.zeros((4,4))
+            matrix[:3, :3] = qvec2rotmat(qvec)
+            matrix[:3, 3] = tvec
+            matrix[3, 3] = 1
+
             camera_id = binary_image_properties[8]
             binary_image_name = b""
             current_char = read_next_bytes(fid, 1, "c")[0]
@@ -284,17 +282,18 @@ def read_images_binary(path_to_model_file):
             point3D_ids = np.array(tuple(map(int, x_y_id_s[2::3])))
             images[image_id] = Image(
                 id=image_id,
-                qvec=qvec,
-                tvec=tvec,
+                qvec=qvec.tolist(),
+                tvec=tvec.tolist(),
+                matrix=matrix.tolist(),
                 camera_id=camera_id,
                 name=image_name,
-                xys=xys,
-                point3D_ids=point3D_ids,
+                xys=xys.tolist(),
+                point3D_ids=point3D_ids.tolist(),
             )
     return images
 
 
-def write_images_text(images, path):
+def write_extrinsics_text(images, path):
     """
     see: src/colmap/scene/reconstruction.cc
         void Reconstruction::ReadImagesText(const std::string& path)
@@ -334,24 +333,21 @@ def write_images_text(images, path):
             fid.write(" ".join(points_strings) + "\n")
 
 
-def write_images_binary(images, path_to_model_file):
-    """
-    see: src/colmap/scene/reconstruction.cc
-        void Reconstruction::ReadImagesBinary(const std::string& path)
-        void Reconstruction::WriteImagesBinary(const std::string& path)
-    """
+def write_extrinsics_binary(images, path_to_model_file):
     with open(path_to_model_file, "wb") as fid:
         write_next_bytes(fid, len(images), "Q")
         for _, img in images.items():
+            xys = np.array(img.xys)
+            point3D_ids = np.array(img.point3D_ids)
             write_next_bytes(fid, img.id, "i")
-            write_next_bytes(fid, img.qvec.tolist(), "dddd")
-            write_next_bytes(fid, img.tvec.tolist(), "ddd")
+            write_next_bytes(fid, list(img.qvec), "dddd")
+            write_next_bytes(fid, list(img.tvec), "ddd")
             write_next_bytes(fid, img.camera_id, "i")
             for char in img.name:
                 write_next_bytes(fid, char.encode("utf-8"), "c")
             write_next_bytes(fid, b"\x00", "c")
-            write_next_bytes(fid, len(img.point3D_ids), "Q")
-            for xy, p3d_id in zip(img.xys, img.point3D_ids):
+            write_next_bytes(fid, len(point3D_ids), "Q")
+            for xy, p3d_id in zip(xys, point3D_ids):
                 write_next_bytes(fid, [*xy, p3d_id], "ddq")
 
 
@@ -499,24 +495,24 @@ def read_model(path, ext=""):
             return
 
     if ext == ".txt":
-        cameras = read_cameras_text(os.path.join(path, "cameras" + ext))
-        images = read_images_text(os.path.join(path, "images" + ext))
+        cameras = read_intrinsics_text(os.path.join(path, "cameras" + ext))
+        images = read_extrinsics_text(os.path.join(path, "images" + ext))
         points3D = read_points3D_text(os.path.join(path, "points3D") + ext)
     else:
-        cameras = read_cameras_binary(os.path.join(path, "cameras" + ext))
-        images = read_images_binary(os.path.join(path, "images" + ext))
+        cameras = read_intrinsics_binary(os.path.join(path, "cameras" + ext))
+        images = read_extrinsics_binary(os.path.join(path, "images" + ext))
         points3D = read_points3D_binary(os.path.join(path, "points3D") + ext)
     return cameras, images, points3D
 
 
 def write_model(cameras, images, points3D, path, ext=".bin"):
     if ext == ".txt":
-        write_cameras_text(cameras, os.path.join(path, "cameras" + ext))
-        write_images_text(images, os.path.join(path, "images" + ext))
+        write_intrinsics_text(cameras, os.path.join(path, "cameras" + ext))
+        write_extrinsics_text(images, os.path.join(path, "images" + ext))
         write_points3D_text(points3D, os.path.join(path, "points3D") + ext)
     else:
-        write_cameras_binary(cameras, os.path.join(path, "cameras" + ext))
-        write_images_binary(images, os.path.join(path, "images" + ext))
+        write_intrinsics_binary(cameras, os.path.join(path, "cameras" + ext))
+        write_extrinsics_binary(images, os.path.join(path, "images" + ext))
         write_points3D_binary(points3D, os.path.join(path, "points3D") + ext)
     return cameras, images, points3D
 

@@ -19,8 +19,7 @@ class ImportCOLMAPModelOperator(bpy.types.Operator):
 
     def execute(self, context):
         if os.path.isdir(self.filepath):
-            cameras, images, points3D = read_model(self.filepath, ext=".bin")
-            read_colmap_model(cameras, images)
+            read_colmap_model(self.filepath)
             self.report({"INFO"}, f"Imported cameras from {self.filepath}")
             return {"FINISHED"}
         else:
@@ -47,11 +46,7 @@ class ExportCOLMAPModelOperator(bpy.types.Operator):
 
     def execute(self, context):
         if os.path.isdir(self.filepath):
-            # Load cameras and images
-            cameras, images, points3D = read_model(self.filepath, ext=".bin")
-
-            # Export COLMAP model with selected mode
-            write_colmap_model(cameras, images, mode=self.export_mode)
+            write_colmap_model(self.filepath)
             self.report({"INFO"}, f"Exported COLMAP model to {self.filepath} using mode {self.export_mode}")
             return {"FINISHED"}
         else:
