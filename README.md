@@ -1,4 +1,5 @@
 # Blender COLMAP Model Import/Export Addon
+[中文README](README.zh.md)
 
 This addon allows you to import and export COLMAP models in Blender. You can easily load COLMAP camera and image data into Blender and export selected objects back into COLMAP format.
 
